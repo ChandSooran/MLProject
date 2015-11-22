@@ -1,2 +1,0 @@
-# MLProject
-ML Course Project
