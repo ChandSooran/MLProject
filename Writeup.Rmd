@@ -1,0 +1,464 @@
+---
+title: "**Predicting Barbell Performance with Machine Learning**"
+author: "Chand Sooran"
+date: "November 22, 2015"
+fontsize: 11pt
+output: html_document
+---
+
+### **Executive Summary**
+In this exercise, I used data collected from wearable instruments regarding the performance of barbell
+lifts by six individuals, each performing the exercise one of five possible ways, in order to develop
+a model to predict the way in which these individuals actually executed the barbell lift.  The data was
+collected from http://groupware.les.inf.puc-rio.br/har.  After downloading the data, cleaning the data, and performing some exploratory data analysis to understand the nature of the various possible predictor variables, I constructed models using seven different approaches: principal components, class partition, random forest, bagging, boosting, linear discriminant analysis, and naive Bayes.  **The best model for prediction was the**
+**Random Forest model with **accuracy of 99.49%, a Kappa of 99.36%, and out-of-sample error of 0.51%.**  All
+of the models were roughly comparable in terms of speed and interpretability, so I chose accuracy as the
+critical factor in assessing the various models I built.
+
+### **Human Activity Recognition**
+The purpose of this exercise is the analysis of data from accelerometers located on the belt, forearm, arm and dumbbell of six participants while they were performing barbell lifts.  The individuals executed the lifts one of five different ways, categorized as A, B, C, D, and E.  A was the correct execution of the maneuver, with the remaining indices relating to a mistake, as described in the link above: "throwing the elbows to the front (Class B), lifting the barbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E)."  The datset consisted of 19,622 observations across 160 variables, one of which "classe" is the outcome variable, a factor with five levels from A through E.  These features included the roll, pitch, yaw, "gyros", "accel", and "magnet", as well summary statistics for these metrics.  There was also a small data set for subsequent testing of just 20 rows across the 160 variables.  I focused on the former (larger) of these two data sets in making my training and testing data sets.
+
+#### **Building the Models**
+
+In building the models, I had to download the data, partition the data into a training set and a testing set,
+remove unnecessary features, and ensure that all of the data was in a format that would permit model building.
+
+```{r, echo = FALSE, message = FALSE}
+## Machine Learning - Course Project - Writeup Section
+
+## INITIATE
+library(caret)
+library(ggplot2)
+library(rpart)
+library(rattle)
+library(corrplot)
+library(foreach)
+library(doParallel)
+library(kernlab)
+library(randomForest)
+library(splines)
+library(plyr)
+library(survival)
+library(gbm)
+
+## DOWNLOAD DATA
+## Set the working directory
+setwd("C://Chand Sooran/Johns Hopkins/Machine Learning/Course Project")
+
+## Set the names of the files and urls for the download
+filenameTrain <- "pml-training.csv"
+filenameTest <- "pml-testing.csv"
+
+url1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+## Put the training file into the working directory
+if(!file.exists(filenameTrain)){
+  f1 <- file.path(getwd(), "pml-training.csv")
+  download.file(url1, f1)
+}
+
+## Put the testing file into the working directory
+if(!file.exists(filenameTest)){
+  f2 <- file.path(getwd(), "pml-testing.csv")
+  download.file(url2,f2)
+}
+```
+
+```{r, echo = FALSE}
+## Read the training file and the testing file
+Origtraining <- read.csv("pml-training.csv")
+Origtesting <- read.csv("pml-testing.csv")
+
+## Create training and testing datasets
+inTrain <- createDataPartition(y = Origtraining$classe, p = 0.75, list = FALSE)
+training <- Origtraining[inTrain,]
+testing <- Origtraining[-inTrain,]
+```
+
+As the first step in cleaning the data, I removed any variables where missing values made up more
+than 97% of the data, in addition to removing several columns whose only constituents were #DIV/0!
+errors.
+
+```{r, echo = FALSE}
+## Check for missing values where more than 97% of the variable's data is missing
+NACheck <- sapply(training, function(x) sum(is.na(x))) / dim(training)[1]
+IsNACheck <- subset(NACheck, NACheck > 0.97)
+NamesIsNACheck <- names(IsNACheck)
+
+## Remove the identified missing values from training
+newtraining <- training[, !(names(training) %in% NamesIsNACheck)]
+newtesting <- testing[, !(names(testing) %in% NamesIsNACheck)]
+
+## Remove variables with only #DIV/0!
+divzerolist <- c("kurtosis_yaw_belt", "skewness_yaw_belt", "amplitude_yaw_belt", "kurtosis_yaw_dumbbell",
+                 "skewness_yaw_dumbbell", "amplitude_yaw_dumbbell", "skewness_yaw_forearm",
+                 "amplitude_yaw_forearm", "kurtosis_yaw_forearm")
+
+newtraining <- newtraining[, -which(names(newtraining) %in% divzerolist)]
+newtesting <- newtesting[, -which(names(newtesting) %in% divzerolist)]
+```
+
+A number of variables were classified as factor variables, despite having summary statistical data (e.g. 
+"kurtosis_roll_belt").  I changed these into numerics in order to include them more suitably in analysis,
+as in the following example.
+
+```{r, warning = FALSE}
+## kurtosis_roll_belt
+newtraining$kurtosis_roll_belt <- as.character(newtraining$kurtosis_roll_belt)
+newtraining$kurtosis_roll_belt <- as.numeric(newtraining$kurtosis_roll_belt)
+newtraining$kurtosis_roll_belt[is.na(newtraining$kurtosis_roll_belt)] <- 0
+
+newtesting$kurtosis_roll_belt <- as.character(newtesting$kurtosis_roll_belt)
+newtesting$kurtosis_roll_belt <- as.numeric(newtesting$kurtosis_roll_belt)
+newtesting$kurtosis_roll_belt[is.na(newtesting$kurtosis_roll_belt)] <- 0
+```
+
+```{r, echo = FALSE, warning = FALSE}
+## kurtosis_picth_belt
+newtraining$kurtosis_picth_belt <- as.numeric(as.character(newtraining$kurtosis_picth_belt))
+newtraining$kurtosis_picth_belt[is.na(newtraining$kurtosis_picth_belt)] <- 0
+
+newtesting$kurtosis_picth_belt <- as.numeric(as.character(newtesting$kurtosis_picth_belt))
+newtesting$kurtosis_picth_belt[is.na(newtesting$kurtosis_picth_belt)] <- 0
+
+## skewness_roll_belt
+newtraining$skewness_roll_belt <- as.numeric(as.character(newtraining$skewness_roll_belt))
+newtraining$skewness_roll_belt[is.na(newtraining$skewness_roll_belt)] <- 0
+
+newtesting$skewness_roll_belt <- as.numeric(as.character(newtesting$skewness_roll_belt))
+newtesting$skewness_roll_belt[is.na(newtesting$skewness_roll_belt)] <- 0
+
+## skewness_roll_belt.1
+newtraining$skewness_roll_belt.1 <- as.numeric(as.character(newtraining$skewness_roll_belt.1))
+newtraining$skewness_roll_belt.1[is.na(newtraining$skewness_roll_belt.1)] <- 0
+
+newtesting$skewness_roll_belt.1 <- as.numeric(as.character(newtesting$skewness_roll_belt.1))
+newtesting$skewness_roll_belt.1[is.na(newtesting$skewness_roll_belt.1)] <- 0
+
+## max_yaw_belt
+newtraining$max_yaw_belt <- as.numeric(as.character(newtraining$max_yaw_belt))
+newtraining$max_yaw_belt[is.na(newtraining$max_yaw_belt)] <- 0
+
+newtesting$max_yaw_belt <- as.numeric(as.character(newtesting$max_yaw_belt))
+newtesting$max_yaw_belt[is.na(newtesting$max_yaw_belt)] <- 0
+
+## min_yaw_belt
+newtraining$min_yaw_belt <- as.numeric(as.character(newtraining$min_yaw_belt))
+newtraining$min_yaw_belt[is.na(newtraining$min_yaw_belt)] <- 0
+
+newtesting$min_yaw_belt <- as.numeric(as.character(newtesting$min_yaw_belt))
+newtesting$min_yaw_belt[is.na(newtesting$min_yaw_belt)] <- 0
+
+## kurtosis_roll_arm
+newtraining$kurtosis_roll_arm <- as.numeric(as.character(newtraining$kurtosis_roll_arm))
+newtraining$kurtosis_roll_arm[is.na(newtraining$kurtosis_roll_arm)] <- 0
+
+newtesting$kurtosis_roll_arm <- as.numeric(as.character(newtesting$kurtosis_roll_arm))
+newtesting$kurtosis_roll_arm[is.na(newtesting$kurtosis_roll_arm)] <- 0
+
+## kurtosis_picth_arm
+newtraining$kurtosis_picth_arm <- as.numeric(as.character(newtraining$kurtosis_picth_arm))
+newtraining$kurtosis_picth_arm[is.na(newtraining$kurtosis_picth_arm)] <- 0
+
+newtesting$kurtosis_picth_arm <- as.numeric(as.character(newtesting$kurtosis_picth_arm))
+newtesting$kurtosis_picth_arm[is.na(newtesting$kurtosis_picth_arm)] <- 0
+
+## kurtosis_yaw_arm
+newtraining$kurtosis_yaw_arm <- as.numeric(as.character(newtraining$kurtosis_yaw_arm))
+newtraining$kurtosis_yaw_arm[is.na(newtraining$kurtosis_yaw_arm)] <- 0
+
+newtesting$kurtosis_yaw_arm <- as.numeric(as.character(newtesting$kurtosis_yaw_arm))
+newtesting$kurtosis_yaw_arm[is.na(newtesting$kurtosis_yaw_arm)] <- 0
+
+## skewness_roll_arm
+newtraining$skewness_roll_arm <- as.numeric(as.character(newtraining$skewness_roll_arm))
+newtraining$skewness_roll_arm[is.na(newtraining$skewness_roll_arm)] <- 0
+
+newtesting$skewness_roll_arm <- as.numeric(as.character(newtesting$skewness_roll_arm))
+newtesting$skewness_roll_arm[is.na(newtesting$skewness_roll_arm)] <- 0
+
+## skewness_pitch_arm
+newtraining$skewness_pitch_arm <- as.numeric(as.character(newtraining$skewness_pitch_arm))
+newtraining$skewness_pitch_arm[is.na(newtraining$skewness_pitch_arm)] <- 0
+
+newtesting$skewness_pitch_arm <- as.numeric(as.character(newtesting$skewness_pitch_arm))
+newtesting$skewness_pitch_arm[is.na(newtesting$skewness_pitch_arm)] <- 0
+
+## skewness_yaw_arm
+newtraining$skewness_yaw_arm <- as.numeric(as.character(newtraining$skewness_yaw_arm))
+newtraining$skewness_yaw_arm[is.na(newtraining$skewness_yaw_arm)] <- 0
+
+newtesting$skewness_yaw_arm <- as.numeric(as.character(newtesting$skewness_yaw_arm))
+newtesting$skewness_yaw_arm[is.na(newtesting$skewness_yaw_arm)] <- 0
+
+## kurtosis_roll_dumbbell
+newtraining$kurtosis_roll_dumbbell <- as.numeric(as.character(newtraining$kurtosis_roll_dumbbell))
+newtraining$kurtosis_roll_dumbbell[is.na(newtraining$kurtosis_roll_dumbbell)] <- 0
+
+newtesting$kurtosis_roll_dumbbell <- as.numeric(as.character(newtesting$kurtosis_roll_dumbbell))
+newtesting$kurtosis_roll_dumbbell[is.na(newtesting$kurtosis_roll_dumbbell)] <- 0
+
+## kurtosis_picth_dumbbell
+newtraining$kurtosis_picth_dumbbell <- as.numeric(as.character(newtraining$kurtosis_picth_dumbbell))
+newtraining$kurtosis_picth_dumbbell[is.na(newtraining$kurtosis_picth_dumbbell)] <- 0
+
+newtesting$kurtosis_picth_dumbbell <- as.numeric(as.character(newtesting$kurtosis_picth_dumbbell))
+newtesting$kurtosis_picth_dumbbell[is.na(newtesting$kurtosis_picth_dumbbell)] <- 0
+
+## skewness_roll_dumbbell
+newtraining$skewness_roll_dumbbell <- as.numeric(as.character(newtraining$skewness_roll_dumbbell))
+newtraining$skewness_roll_dumbbell[is.na(newtraining$skewness_roll_dumbbell)] <- 0
+
+newtesting$skewness_roll_dumbbell <- as.numeric(as.character(newtesting$skewness_roll_dumbbell))
+newtesting$skewness_roll_dumbbell[is.na(newtesting$skewness_roll_dumbbell)] <- 0
+
+## skewness_pitch_dumbbell
+newtraining$skewness_pitch_dumbbell <- as.numeric(as.character(newtraining$skewness_pitch_dumbbell))
+newtraining$skewness_pitch_dumbbell[is.na(newtraining$skewness_pitch_dumbbell)] <- 0
+
+newtesting$skewness_pitch_dumbbell <- as.numeric(as.character(newtesting$skewness_pitch_dumbbell))
+newtesting$skewness_pitch_dumbbell[is.na(newtesting$skewness_pitch_dumbbell)] <- 0
+
+## max_yaw_dumbbell
+newtraining$max_yaw_dumbbell <- as.numeric(as.character(newtraining$max_yaw_dumbbell))
+newtraining$max_yaw_dumbbell[is.na(newtraining$max_yaw_dumbbell)] <- 0
+
+newtesting$max_yaw_dumbbell <- as.numeric(as.character(newtesting$max_yaw_dumbbell))
+newtesting$max_yaw_dumbbell[is.na(newtesting$max_yaw_dumbbell)] <- 0
+
+## min_yaw_dumbbell
+newtraining$min_yaw_dumbbell <- as.numeric(as.character(newtraining$min_yaw_dumbbell))
+newtraining$min_yaw_dumbbell[is.na(newtraining$min_yaw_dumbbell)] <- 0
+
+newtesting$min_yaw_dumbbell <- as.numeric(as.character(newtesting$min_yaw_dumbbell))
+newtesting$min_yaw_dumbbell[is.na(newtesting$min_yaw_dumbbell)] <- 0
+
+## kurtosis_roll_forearm
+newtraining$kurtosis_roll_forearm <- as.numeric(as.character(newtraining$kurtosis_roll_forearm))
+newtraining$kurtosis_roll_forearm[is.na(newtraining$kurtosis_roll_forearm)] <- 0
+
+newtesting$kurtosis_roll_forearm <- as.numeric(as.character(newtesting$kurtosis_roll_forearm))
+newtesting$kurtosis_roll_forearm[is.na(newtesting$kurtosis_roll_forearm)] <- 0
+
+## kurtosis_picth_forearm
+newtraining$kurtosis_picth_forearm <- as.numeric(as.character(newtraining$kurtosis_picth_forearm))
+newtraining$kurtosis_picth_forearm[is.na(newtraining$kurtosis_picth_forearm)] <- 0
+
+newtesting$kurtosis_picth_forearm <- as.numeric(as.character(newtesting$kurtosis_picth_forearm))
+newtesting$kurtosis_picth_forearm[is.na(newtesting$kurtosis_picth_forearm)] <- 0
+
+## skewness_roll_forearm
+newtraining$skewness_roll_forearm <- as.numeric(as.character(newtraining$skewness_roll_forearm))
+newtraining$skewness_roll_forearm[is.na(newtraining$skewness_roll_forearm)] <- 0
+
+newtesting$skewness_roll_forearm <- as.numeric(as.character(newtesting$skewness_roll_forearm))
+newtesting$skewness_roll_forearm[is.na(newtesting$skewness_roll_forearm)] <- 0
+
+## skewness_pitch_forearm
+newtraining$skewness_pitch_forearm <- as.numeric(as.character(newtraining$skewness_pitch_forearm))
+newtraining$skewness_pitch_forearm[is.na(newtraining$skewness_pitch_forearm)] <- 0
+
+newtesting$skewness_pitch_forearm <- as.numeric(as.character(newtesting$skewness_pitch_forearm))
+newtesting$skewness_pitch_forearm[is.na(newtesting$skewness_pitch_forearm)] <- 0
+
+## max_yaw_forearm
+newtraining$max_yaw_forearm <- as.numeric(as.character(newtraining$max_yaw_forearm))
+newtraining$max_yaw_forearm[is.na(newtraining$max_yaw_forearm)] <- 0
+
+newtesting$max_yaw_forearm <- as.numeric(as.character(newtesting$max_yaw_forearm))
+newtesting$max_yaw_forearm[is.na(newtesting$max_yaw_forearm)] <- 0
+
+## min_yaw_forearm
+newtraining$min_yaw_forearm <- as.numeric(as.character(newtraining$min_yaw_forearm))
+newtraining$min_yaw_forearm[is.na(newtraining$min_yaw_forearm)] <- 0
+
+newtesting$min_yaw_forearm <- as.numeric(as.character(newtesting$min_yaw_forearm))
+newtesting$min_yaw_forearm[is.na(newtesting$min_yaw_forearm)] <- 0
+```
+
+Finally, I removed the first seven columns.  These contained descriptive information, such as
+the names of the individuals participants.  With six participants and only five potential classes
+of performance, I thought that this was the type of feature that might cloud the performance of
+the model on a subsequent testing set.
+
+```{r, echo = FALSE}
+## Remove the first 7 columns, containing descriptive information
+newnewtraining <- newtraining[,-(1:7)]
+newnewtesting <- newtesting[,-(1:7)]
+```
+
+#### **Exploratory Data Analysis**
+Next, I plotted the charts of each of the remaining features against the outcome variable, as
+in this plot of the "roll_belt" feature against "classe", in order to see which variables had
+expanatory power, and to understand the overlap of explanatory power between features.  Here,
+one can see that the "roll_belt" feature is much lower for correctly performing the exercise
+than for making a mistake, with each of the four possible mistakes looking broadly similar.  If
+anything, Class E has greater variability in "roll_belt".
+
+```{r, echo = FALSE}
+## Key variable plots
+plot(x = newnewtraining$classe, y = newnewtraining$roll_belt, ylab = "roll_belt", main = "roll_belt vs. classe") 
+```
+
+I also identified pairs of predictor variables with high correlations and I found that there was
+a significant number of pairs of these highly correlated predictors, using the following code.
+
+```{r, eval = FALSE}
+## Check correlations
+M <- abs(cor(newnewtraining[,-77]))
+diag(M) <- 0
+MM <- which(M > 0.8, arr.ind = T) ## There is plenty of correlation
+```
+
+#### **Principal Components**
+Given the large set of potential explanatory variables, I started with principal components analysis in order to try to reduce the number of predictors.  Also, I was motivated by the large number of pairs of highly
+correlated predictors.
+
+```{r}
+## Train the class partition with Principal Components, given all the correlation
+modPC <- train(classe ~ ., data = newnewtraining, preProcess = c("center","scale", "pca"), method = "rpart")
+fancyRpartPlot(modPC$finalModel)
+## predPC <- predict(modPC, newdata = newnewtesting)
+## print(confusionMatrix(predPC, newnewtesting$classe))
+```
+
+However, the partition plot and the confusion matrix showed that the principal components approach only selected A or E, with accuracy only 33.58% of the time and a Kappa of 0.0851. The out-of-sample error here was
+66.42%.
+
+#### **Classification Tree**
+Next, I chose to look at a classification tree.  Here is the code for training the model. I decided to
+consider a Classification Tree next for its intuitive appeal.
+
+```{r}
+modPart <- train(classe ~ ., data = newnewtraining, preProcess = c("center","scale"), method = "rpart")
+fancyRpartPlot(modPart$finalModel)
+predPart <- predict(modPart, newdata = newnewtesting) ## Left is predictions, top is actual
+## modPart ## Accuracy 51.75%, Kappa 37.3%, Cp 3.56%
+## modPart$finalModel
+## print(modPart$results)
+## print(confusionMatrix(predPart, newnewtesting$classe))
+```
+
+The classification tree did much better with accuracy of 49.88% and a Kappa of 0.3456.  The
+out of sample error was 50.12%.
+
+#### **Random Forest**
+Extending the classification tree to a random forest, **using cross-validation**, as shown in the
+following code.
+
+```{r, echo = FALSE, message = FALSE}
+## Second model using parallel computing
+library(foreach)
+library(doSNOW)
+```
+
+```{r}
+registerDoSNOW(makeCluster(4, type = "SOCK"))
+
+x <- newnewtraining[,-77]
+y <- newnewtraining[,77]
+
+rf <- foreach(ntree = rep(250,4), .combine = combine, .packages = "randomForest") %dopar%
+  randomForest(x, y, ntree = ntree)
+
+predrf <- predict(object = rf, newdata = newnewtesting)
+## print(table(predrf, newnewtesting$classe))
+print(confusionMatrix(predrf, newnewtesting$classe))
+```
+
+The Random Forest had much better predictive accuracy at 99.49% with a Kappa of 99.36%.  Note also the 
+excellent Sensitivity and Specificity.  The out of sample error here was 0.51%.
+
+#### **Bagging**
+The next model I built was Bagging, bootstrap aggregation with 10 bootstraps, as another implementation
+of the cross-validation approach.
+
+```{r}
+## Train with bagging
+BagTraining <- newnewtraining
+BagPredictors <- BagTraining[, -77]
+BagOutcome <- BagTraining[,77]
+
+treebag <- bag(x = BagPredictors, y = BagOutcome, B = 10, 
+                  bagControl = bagControl(fit = ctreeBag$fit,
+                  predict = ctreeBag$pred,
+                  aggregate = ctreeBag$aggregate,
+                  oob = TRUE))
+
+predBag <- predict(treebag, newdata = newnewtesting[,-77])
+print(table(predBag, newnewtesting$classe))
+## print(confusionMatrix(predBag, newnewtesting$classe))
+```
+
+Here, bagging had an accuracy of 96.31% and a Kappa of 95.33%. The out-of-sample
+error was 3.69%.
+
+#### **Boosting**
+My next attempt at modeling with cross-validation was a boosting model.
+
+```{r, message = FALSE}
+## Train with boosting
+gbmControl <- trainControl(method = "repeatedcv", ## Resampling method (eg. boot, boot632, cv, repeatedcv, LOOCV, LGOCV)
+                           number = 5, ## Number of folds
+                           repeats = 1, ## The number of complete sets of folds to compute
+                           verboseIter = TRUE) ## Print a training log = TRUE
+
+set.seed(25020)
+
+modGBM2 <- train(classe ~ ., data = newnewtraining, 
+                 method = "gbm",
+                 trControl = gbmControl,
+                 verbose = FALSE)
+
+predGBM2 <- predict(modGBM2, newnewtesting)
+## confusionMatrix(predGBM2, newnewtesting$classe)
+```
+
+Here, boosting had an accuracy of 96.31% and a Kappa of 95.31%. The out-of-sample error was 3.69%.
+
+#### **Linear Discriminant Analysis**
+I attempted to build a linear discriminant analysis model, again using cross-validation.
+
+```{r, message = FALSE}
+## Train with linear discriminant analysis
+modLDA <- train(classe ~ ., data = newnewtraining, method = "lda")
+predLDA <- predict(modLDA, newdata = newnewtesting)
+print(table(predLDA, newnewtesting$classe))
+print(modLDA$results)
+## print(confusionMatrix(predLDA, newnewtesting$classe))
+```
+
+Here, linear discriminant analysis had an accuracy of 69.27% and a Kappa of 61.14%.  The out-of-sample
+error was 30.73%.
+
+#### **Naive Bayes**
+Finally, I built a Naive Bayes model with repeated cross-validation.
+
+```{r, message = FALSE}
+## nbControl <- trainControl(method = "repeatedcv",
+                          ## number = 5,
+                          ## repeats = 1,
+                          ## verboseIter = TRUE)
+
+## set.seed(42872)
+
+## modNB3 <- train(classe ~ ., data = newnewtraining, 
+                 ## method = "nb",
+                 ## trControl = nbControl,
+                 ## verbose = FALSE)
+
+## predNB3 <- predict(modNB3, newnewtesting)
+## print(confusionMatrix(predNB3, newnewtesting$classe))
+```
+
+The Naive Bayes model had an accuracy of 63.09% and a Kappa of 54.55%.The out-of-sample error was
+36.91%.
+
+### **Conclusion: The Best Model Was the Random Forest**
+Based on accuracy and Kappa, I selected the Random Forest model as the best model.  Cross-validation
+was my preferred approach after the limited success I had with a principal components approach
+and with the initial classification tree, given the breadth and variability in the predictor
+variables.  Boosting and bagging were close behind, suggesting some validity to the selection
+of cross-validation as an approach.
+
